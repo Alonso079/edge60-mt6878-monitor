@@ -2,7 +2,7 @@
 
 ## Modos disponibles
 
-El módulo residente 1.2.0-rc1 se carga una sola vez durante el arranque y ofrece
+El módulo residente 1.2.0-rc4 se carga una sola vez durante el arranque y ofrece
 dos formas de trabajo:
 
 ```text
@@ -27,6 +27,16 @@ Captura con libpcap/tcpdump. `capture.sh` elige `mon0` automáticamente:
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/capture.sh /data/local/tmp/concurrent.pcap'
 ```
 
+Mientras esa captura está activa, una ventana corta puede observar otro canal:
+
+```sh
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi survey 2412 250'
+```
+
+Usa normalmente 100-250 ms. El comando acepta hasta 3000 ms, pero una ventana
+larga aumenta la latencia porque la única radio deja temporalmente el canal de
+la estación. El estado original de `p2p0` se restaura al terminar o ante error.
+
 Detén el monitor sin tocar la asociación de `wlan0`:
 
 ```sh
@@ -35,7 +45,8 @@ su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi concurrent-stop'
 
 Este modo captura RX de administración que el firmware entrega como 802.11
 crudo. Los datos normales siguen llegando a `wlan0` traducidos a Ethernet. La
-transmisión desde `mon0` está desactivada.
+transmisión desde `mon0` está desactivada. `mon0` tampoco participa en ARP o
+multicast IP, para mantener el PCAP exclusivamente en formato Radiotap/802.11.
 
 ## Monitor exclusivo
 
@@ -71,6 +82,8 @@ para cambiar el binario residente.
 - asociación y tráfico Android preservados con `mon0` activa;
 - captura Radiotap/802.11 válida y cero descartes del kernel;
 - rechazo de una frecuencia incompatible con la estación;
+- ventanas MCC fuera de canal y restauración automática de `p2p0`;
+- 144 tramas de administración con Radiotap válido y cero malformadas;
 - eliminación de `mon0` sin perder conectividad;
 - cinco ciclos de creación/uso/eliminación;
 - sin panic, BUG, assert ni reinicio del firmware en las pruebas finales.

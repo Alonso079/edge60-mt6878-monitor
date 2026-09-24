@@ -297,6 +297,7 @@ static void usage(void)
 		"usage:\n"
 		"  mtkmon iface IFINDEX monitor|station\n"
 		"  mtkmon channel IFINDEX FREQ_MHZ\n"
+		"  mtkmon roc IFINDEX FREQ_MHZ DURATION_MS\n"
 		"  mtkmon add WIPHY_INDEX NAME\n"
 		"  mtkmon del IFINDEX\n");
 }
@@ -356,6 +357,19 @@ int app_main(int argc, char **argv)
 		values[2] = value;
 		result = send_nl80211(fd, family_id, NL80211_CMD_SET_WIPHY,
 					ifindex, attrs, values, 3);
+	} else if (str_eq(argv[1], "roc") && argc == 5) {
+		if (parse_u32(argv[3], &value) ||
+		    parse_u32(argv[4], &values[1])) {
+			usage();
+			result = -22;
+			goto close_error;
+		}
+		attrs[0] = NL80211_ATTR_WIPHY_FREQ;
+		values[0] = value;
+		attrs[1] = NL80211_ATTR_DURATION;
+		result = send_nl80211(fd, family_id,
+					NL80211_CMD_REMAIN_ON_CHANNEL,
+					ifindex, attrs, values, 2);
 	} else if (str_eq(argv[1], "add") && argc == 4) {
 		result = add_monitor_interface(fd, family_id, ifindex, argv[3]);
 	} else if (str_eq(argv[1], "del") && argc == 3) {

@@ -1,6 +1,6 @@
 # Validación de monitor e inyección MT6878
 
-## Resultado 1.2.0-rc1
+## Resultado 1.2.0-rc4
 
 El Motorola Edge 60 (`scout`, MT6878) ejecuta un módulo Wi-Fi residente que
 mantiene el modo exclusivo de 1.1.3 y añade una interfaz monitor concurrente.
@@ -19,7 +19,7 @@ Android permanecen activos.
 - Compilador: Android Clang `r487747c`, Clang 17.0.2.
 - Arquitectura/variante: AArch64 `user`.
 - Módulo candidato SHA-256:
-  `1db98cbb70407021b7307743e3490c6e00c3a9438429801e9b085ae7f3a805d5`.
+  `a6673ec9ff34c44f99c614caf14d32a05787c079a000c9dc92edddcd97f7c52b`.
 - Vermagic: coincidencia exacta con el dispositivo.
 - Símbolos importados comunes: 388/388 CRC iguales.
 - CRC distintos: 0.
@@ -36,7 +36,10 @@ Los cambios cubren 17 archivos del driver:
 5. entrega Radiotap independiente a `mon0`;
 6. fallback Radiotap para administración sin RXV completo;
 7. validación de canal contra todos los BSS AIS activos;
-8. TX descartado deliberadamente en la interfaz concurrente.
+8. TX descartado deliberadamente en la interfaz concurrente;
+9. validación de cabecera 802.11 antes de clonar RX;
+10. ARP y multicast desactivados en `mon0` para impedir tráfico IP local;
+11. remain-on-channel acotado para muestreo MCC.
 
 Los cambios previos de monitor exclusivo se conservan: selección de canal,
 Radiotap RX, validación y retiro de Radiotap TX, clasificación 802.11, cola
@@ -63,13 +66,25 @@ Se comprobó en el teléfono físico:
 El contador de cierre del driver también mostró clonación activa y cero fallos
 de clonación en la prueba principal.
 
+La prueba MCC final produjo 144 paquetes, todos Radiotap versión 0 y tramas de
+administración, con cero paquetes malformados. Incluyó 5 GHz y tres frecuencias
+de 2,4 GHz durante una exploración, no registró descartes del kernel y dejó
+`p2p0` DOWN al completar la ventana. La conectividad de la estación completó
+12/12 respuestas durante la misma prueba; la latencia máxima fue 213 ms con
+una ventana de 1000 ms.
+
 ## Límite observado
 
 El firmware fullmac entrega datos normales ya traducidos a Ethernet. El host no
 puede reconstruir de forma fiable sus cabeceras y metadatos 802.11, por lo que
 `mon0` concurrente expone administración cruda y no todo el tráfico de datos.
-Durante un escaneo activo, la interfaz observa los canales que recorre la radio;
-fuera de esos periodos comparte el canal de la estación.
+Durante un escaneo o `survey`, la interfaz observa los canales que recorre la
+radio; fuera de esos periodos comparte el canal de la estación.
+
+Las consultas privadas al firmware devolvieron `RSDB:0` y
+`DBDC Mode: Disable`. Esto descarta dos canales físicos simultáneos. El muestreo
+fuera de canal usa MCC: la radio alterna temporalmente y puede elevar la
+latencia de `wlan0` durante la ventana.
 
 ## Monitor exclusivo e inyección
 

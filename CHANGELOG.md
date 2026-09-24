@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0-rc4
+
+- Add a bounded remain-on-channel command for MCC off-channel surveys.
+- Restore `p2p0` state automatically after every survey window.
+- Report standard Radiotap channel and flags when full RXV metadata is absent.
+- Validate frame-control fields before cloning concurrent management RX.
+- Reject descriptor-misclassified Ethernet payloads from `mon0`.
+- Disable ARP and multicast on the capture-only netdev so local IPv6 MLD
+  packets cannot contaminate Radiotap PCAPs.
+- Confirm on hardware that RSDB is unavailable and DBDC is disabled.
+
 ## 1.2.0-rc1
 
 - Add a concurrent `mon0` monitor netdev while `wlan0` remains managed.

@@ -60,10 +60,41 @@ index b3308d4..d14dabb 100755
  #endif
  #endif /* _RADIOTAP_H */
 diff --git a/nic/nic_rx.c b/nic/nic_rx.c
-index ba235de..6781277 100644
+index ba235de..c2feb7c 100644
 --- a/nic/nic_rx.c
 +++ b/nic/nic_rx.c
-@@ -2028,6 +2028,23 @@ void nicRxProcessDataPacket(struct ADAPTER *prAdapter,
+@@ -92,6 +92,30 @@ apfnProcessRxMgtFrame[MAX_NUM_OF_FC_SUBTYPES] = {
+ };
+ #endif
+ 
++#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++/* Concurrent mode is intentionally management-only.  Some station RX
++ * descriptors report header translation as disabled even though the payload
++ * is Ethernet.  Validate the frame control field before exposing a packet on
++ * the Radiotap netdev so those packets cannot corrupt a capture.
++ */
++static u_int8_t nicRxIsRawMgmtFrame(struct ADAPTER *prAdapter,
++				    struct SW_RFB *prSwRfb)
++{
++	uint16_t u2FrameCtrl;
++
++	if (!prAdapter || !prSwRfb || !prSwRfb->pvHeader ||
++	    prSwRfb->u2PacketLen < sizeof(struct WLAN_MAC_HEADER) ||
++	    prSwRfb->u2PacketLen > RX_GET_PACKET_MAX_SIZE(prAdapter))
++		return FALSE;
++
++	WLAN_GET_FIELD_16(prSwRfb->pvHeader, &u2FrameCtrl);
++	if ((u2FrameCtrl & MASK_FC_PROTOCOL_VER) != 0)
++		return FALSE;
++
++	return RXM_IS_MGMT_FRAME(u2FrameCtrl);
++}
++#endif
++
+ struct RX_EVENT_HANDLER arEventTable[] = {
+ 	{EVENT_ID_RX_ADDBA,	qmHandleEventRxAddBa},
+ #if CFG_SUPPORT_DBDC
+@@ -2028,6 +2052,25 @@ void nicRxProcessDataPacket(struct ADAPTER *prAdapter,
  
  	nicRxFillRFB(prAdapter, prSwRfb);
  
@@ -74,6 +105,8 @@ index ba235de..6781277 100644
 +
 +		if (prSwRfb->fgHdrTran) {
 +			prAdapter->prGlueInfo->u4MonRxHdrTranslated++;
++		} else if (!nicRxIsRawMgmtFrame(prAdapter, prSwRfb)) {
++			prAdapter->prGlueInfo->u4MonRxInvalidRaw++;
 +		} else if (pvMonDev) {
 +			if (radiotapFillRadiotapClone(prAdapter, prSwRfb,
 +						   pvMonDev))
@@ -87,7 +120,7 @@ index ba235de..6781277 100644
  	fgDrop = FALSE;
  
  	prRxCtrl = &prAdapter->rRxCtrl;
-@@ -2287,6 +2304,22 @@ void nicRxProcessMgmtPacket(struct ADAPTER *prAdapter,
+@@ -2287,6 +2330,24 @@ void nicRxProcessMgmtPacket(struct ADAPTER *prAdapter,
  		return;
  	}
  
@@ -97,7 +130,9 @@ index ba235de..6781277 100644
 +		void *pvMonDev = READ_ONCE(
 +			prAdapter->prGlueInfo->prMonDevHandler);
 +
-+		if (pvMonDev) {
++		if (!nicRxIsRawMgmtFrame(prAdapter, prSwRfb)) {
++			prAdapter->prGlueInfo->u4MonRxInvalidRaw++;
++		} else if (pvMonDev) {
 +			if (radiotapFillRadiotapClone(prAdapter, prSwRfb,
 +						   pvMonDev))
 +				prAdapter->prGlueInfo->u4MonRxRaw++;
@@ -110,7 +145,7 @@ index ba235de..6781277 100644
  #if CFG_WIFI_SW_CIPHER_MISMATCH
  	prWlanHeader = (struct WLAN_MAC_HEADER *) prSwRfb->pvHeader;
  #endif
-@@ -4760,4 +4793,3 @@ uint32_t nicRxGetReorderCnt(struct ADAPTER *prAdapter)
+@@ -4760,4 +4821,3 @@ uint32_t nicRxGetReorderCnt(struct ADAPTER *prAdapter)
  
  	return u4Cnt;
  }
@@ -347,7 +382,7 @@ index e0ae8e2..d04d4f5 100644
  				&& ucTC == prDequeuedPkt->ucTC
  #endif
 diff --git a/nic/radiotap.c b/nic/radiotap.c
-index e4feb50..56503e5 100644
+index e4feb50..ad829c6 100644
 --- a/nic/radiotap.c
 +++ b/nic/radiotap.c
 @@ -376,8 +376,10 @@ static void radiotap_fill_flags(struct IEEE80211_RADIOTAP_INFO *p_radiotap_info,
@@ -356,14 +391,45 @@ index e4feb50..56503e5 100644
  
 -void radiotapFillRadiotap(struct ADAPTER *prAdapter,
 -			    struct SW_RFB *prSwRfb)
-+static void radiotapFillRadiotapInternal(struct ADAPTER *prAdapter,
++static u_int8_t radiotapFillRadiotapInternal(struct ADAPTER *prAdapter,
 +			    struct SW_RFB *prSwRfb,
 +			    void *pvMonitorDev,
 +			    u_int8_t fgReturnRfb)
  {
  	struct RX_CTRL *prRxCtrl = &prAdapter->rRxCtrl;
  	struct IEEE80211_RADIOTAP_INFO radiotapInfo = {0};
-@@ -563,6 +565,13 @@ void radiotapFillRadiotap(struct ADAPTER *prAdapter,
+@@ -392,6 +394,7 @@ void radiotapFillRadiotap(struct ADAPTER *prAdapter,
+ 	uint16_t radiotap_len = sizeof(struct IEEE80211_RADIOTAP_HEADER);
+ 	uint16_t padding_len = 0;
+ 	uint32_t present;
++	u_int8_t fgSuccess = FALSE;
+ 
+ 	if (prRxDescOps->nic_rxd_fill_radiotap) {
+ 		prSwRfb->prRadiotapInfo = &radiotapInfo;
+@@ -427,7 +430,14 @@ void radiotapFillRadiotap(struct ADAPTER *prAdapter,
+ 		present = IEEE80211_RADIOTAP_FIELD_PRESENT_HE_MU;
+ 		break;
+ 	default:
+-		present = IEEE80211_RADIOTAP_FIELD_VENDOR;
++		/* Station and ROC management RX can omit the complete RXV groups.
++		 * The base RX descriptor still carries reliable channel, band and
++		 * frame-status fields, so publish those as standard Radiotap fields
++		 * instead of leaving analyzers with an unlabelled vendor blob.
++		 */
++		present = IEEE80211_RADIOTAP_FIELD_FLAGS |
++			  IEEE80211_RADIOTAP_FIELD_CHANNEL |
++			  IEEE80211_RADIOTAP_FIELD_VENDOR;
+ 		break;
+ 	}
+ 
+@@ -557,12 +567,20 @@ void radiotapFillRadiotap(struct ADAPTER *prAdapter,
+ 	radiotap_len += radiotapInfo.u2VendorLen;
+ 	header->u2ItLen = CPU_TO_LE16(radiotap_len);
+ 	header->u4ItPresent = present;
++	fgSuccess = TRUE;
+ 
+ 	for (func_idx = 0; func_idx < func_num; func_idx++)	{
+ 		p_data = p_base + radiotap_fill_func[func_idx].offset;
  		radiotap_fill_func[func_idx].radiotap_fill_func(&radiotapInfo, p_data);
  	}
  
@@ -371,13 +437,35 @@ index e4feb50..56503e5 100644
 +		kalRxIndicateMonitorPkt(prAdapter->prGlueInfo,
 +			prSwRfb->pvPacket, pvMonitorDev);
 +		prSwRfb->pvPacket = NULL;
-+		return;
++		return TRUE;
 +	}
 +
  #if CFG_SUPPORT_MULTITHREAD
  	if (HAL_IS_RX_DIRECT(prAdapter)) {
  		kalRxIndicateOnePkt(prAdapter->prGlueInfo, prSwRfb->pvPacket);
-@@ -613,6 +622,47 @@ void radiotapFillRadiotap(struct ADAPTER *prAdapter,
+@@ -586,15 +604,15 @@ void radiotapFillRadiotap(struct ADAPTER *prAdapter,
+ 	 * only if SKB is NULL.
+ 	 */
+ 	if (!prSwRfb->pvPacket) {
+-		nicRxReturnRFB(prAdapter, prSwRfb);
+-		kal_tasklet_hi_schedule(&prAdapter->prGlueInfo->rRxRfbRetTask);
+-		return;
++			nicRxReturnRFB(prAdapter, prSwRfb);
++			kal_tasklet_hi_schedule(&prAdapter->prGlueInfo->rRxRfbRetTask);
++			return TRUE;
+ 	}
+ #elif CFG_SUPPORT_RETURN_WORK
+ 	if (!prSwRfb->pvPacket) {
+-		nicRxReturnRFB(prAdapter, prSwRfb);
+-		kalRxRfbReturnWorkSchedule(prAdapter->prGlueInfo);
+-		return;
++			nicRxReturnRFB(prAdapter, prSwRfb);
++			kalRxRfbReturnWorkSchedule(prAdapter->prGlueInfo);
++			return TRUE;
+ 	}
+ #endif
+ 
+@@ -613,6 +631,47 @@ void radiotapFillRadiotap(struct ADAPTER *prAdapter,
  	}
  #endif
  bypass:
@@ -386,6 +474,7 @@ index e4feb50..56503e5 100644
 +		nicRxReturnRFB(prAdapter, prSwRfb);
 +	else if (prSwRfb->pvPacket)
 +		kalPacketFree(prAdapter->prGlueInfo, prSwRfb->pvPacket);
++	return fgSuccess;
 +}
 +
 +void radiotapFillRadiotap(struct ADAPTER *prAdapter,
@@ -421,13 +510,12 @@ index e4feb50..56503e5 100644
 +	rMonitorRfb.pucRecvBuff = pucRecvBuff;
 +	rMonitorRfb.prRxStatus = rMonitorRfb.pucRecvBuff;
 +	rMonitorRfb.prRadiotapInfo = NULL;
-+	radiotapFillRadiotapInternal(prAdapter, &rMonitorRfb,
++	return radiotapFillRadiotapInternal(prAdapter, &rMonitorRfb,
 +		pvMonitorDev, FALSE);
-+	return TRUE;
  }
  #endif
 diff --git a/os/linux/gl_cfg80211.c b/os/linux/gl_cfg80211.c
-index 3cc5a3f..f76d49c 100644
+index 3cc5a3f..ef2a756 100644
 --- a/os/linux/gl_cfg80211.c
 +++ b/os/linux/gl_cfg80211.c
 @@ -6006,6 +6006,7 @@ void mtk_init_monitor_role(struct wiphy *wiphy,
@@ -479,7 +567,7 @@ index 3cc5a3f..f76d49c 100644
  	ndev->type = ARPHRD_ETHER;
  	ndev->ieee80211_ptr->iftype = NL80211_IFTYPE_STATION;
  	DBGLOG(INIT, INFO, "disable sniffer mode\n");
-@@ -6323,6 +6342,195 @@ static void mtk_vif_destructor(struct net_device *dev)
+@@ -6323,6 +6342,201 @@ static void mtk_vif_destructor(struct net_device *dev)
  	}
  }
  
@@ -582,6 +670,11 @@ index 3cc5a3f..f76d49c 100644
 +	dev->type = ARPHRD_IEEE80211_RADIOTAP;
 +	dev->hard_header_len = 0;
 +	dev->tx_queue_len = 0;
++	/* A capture-only monitor netdev must not join IPv6 multicast groups.
++	 * Locally generated MLD packets are Ethernet frames and would otherwise
++	 * appear as malformed Radiotap packets to AF_PACKET listeners.
++	 */
++	dev->flags = IFF_NOARP;
 +	dev->ieee80211_ptr = wdev;
 +	wdev->netdev = dev;
 +	SET_NETDEV_DEV(dev, wiphy_dev(wiphy));
@@ -620,6 +713,7 @@ index 3cc5a3f..f76d49c 100644
 +
 +	glue->u4MonRxRaw = 0;
 +	glue->u4MonRxHdrTranslated = 0;
++	glue->u4MonRxInvalidRaw = 0;
 +	glue->u4MonRxCloneFail = 0;
 +	WRITE_ONCE(glue->prMonDevHandler, dev);
 +	DBGLOG(INIT, INFO, "concurrent monitor interface %s registered\n",
@@ -644,9 +738,9 @@ index 3cc5a3f..f76d49c 100644
 +	netif_carrier_off(dev);
 +	synchronize_net();
 +	DBGLOG(INIT, INFO,
-+		"concurrent monitor removed raw=%u translated=%u clone_fail=%u\n",
++		"concurrent monitor removed raw=%u translated=%u invalid=%u clone_fail=%u\n",
 +		glue->u4MonRxRaw, glue->u4MonRxHdrTranslated,
-+		glue->u4MonRxCloneFail);
++		glue->u4MonRxInvalidRaw, glue->u4MonRxCloneFail);
 +#if KERNEL_VERSION(5, 12, 0) <= CFG80211_VERSION_CODE
 +	cfg80211_unregister_netdevice(dev);
 +#else
@@ -675,7 +769,7 @@ index 3cc5a3f..f76d49c 100644
  #if KERNEL_VERSION(4, 1, 0) <= CFG80211_VERSION_CODE
  struct wireless_dev *mtk_cfg80211_add_iface(struct wiphy *wiphy,
  		const char *name, unsigned char name_assign_type,
-@@ -6554,6 +6762,11 @@ struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
+@@ -6554,6 +6768,11 @@ struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
  						  params);
  #endif	/* KERNEL_VERSION */
  
@@ -687,7 +781,7 @@ index 3cc5a3f..f76d49c 100644
  	/* TODO: error handele for the non-P2P interface */
  
  #if (CFG_ENABLE_WIFI_DIRECT_CFG_80211 == 0)
-@@ -6660,6 +6873,11 @@ int mtk_cfg_del_iface(struct wiphy *wiphy,
+@@ -6660,6 +6879,11 @@ int mtk_cfg_del_iface(struct wiphy *wiphy,
  		return -EFAULT;
  	}
  
@@ -699,7 +793,7 @@ index 3cc5a3f..f76d49c 100644
  #if CFG_ENABLE_WIFI_DIRECT && CFG_ENABLE_WIFI_DIRECT_CFG_80211
  	if (mtk_IsP2PNetDevice(prGlueInfo, wdev->netdev) > 0) {
  		return mtk_p2p_cfg80211_del_iface(wiphy, wdev);
-@@ -6705,6 +6923,11 @@ int mtk_cfg_change_iface(struct wiphy *wiphy,
+@@ -6705,6 +6929,11 @@ int mtk_cfg_change_iface(struct wiphy *wiphy,
  		return -EINVAL;
  	}
  
@@ -711,7 +805,7 @@ index 3cc5a3f..f76d49c 100644
  	prNetdevPriv = (struct NETDEV_PRIVATE_GLUE_INFO *)
  		       netdev_priv(ndev);
  
-@@ -8510,6 +8733,9 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+@@ -8510,6 +8739,9 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
  			struct cfg80211_chan_def *chandef)
  {
  	struct GLUE_INFO *prGlueInfo;
@@ -721,7 +815,7 @@ index 3cc5a3f..f76d49c 100644
  	uint8_t ucBand = BAND_NULL;
  	uint8_t ucSco = 0;
  	uint8_t ucChannelWidth = 0;
-@@ -8543,6 +8769,11 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+@@ -8543,6 +8775,11 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
  		case NL80211_BAND_5GHZ:
  			ucBand = BAND_5G;
  			break;
@@ -733,7 +827,7 @@ index 3cc5a3f..f76d49c 100644
  		default:
  			return -EFAULT;
  		}
-@@ -8564,6 +8795,7 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+@@ -8564,6 +8801,7 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
  			else
  				ucSco = CHNL_EXT_SCB;
  			break;
@@ -741,7 +835,7 @@ index 3cc5a3f..f76d49c 100644
  		case NL80211_CHAN_WIDTH_20:
  			ucChannelWidth = CW_20_40MHZ;
  			break;
-@@ -8572,6 +8804,34 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+@@ -8572,6 +8810,34 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
  		}
  	}
  
@@ -776,7 +870,7 @@ index 3cc5a3f..f76d49c 100644
  	prGlueInfo->ucPriChannel = ucPriChannel;
  	prGlueInfo->ucChannelS1 = ucChannelS1;
  	prGlueInfo->ucChannelS2 = ucChannelS2;
-@@ -8580,6 +8840,11 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+@@ -8580,6 +8846,11 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
  	prGlueInfo->ucSco = ucSco;
  
  	rStatus = kalIoctl(prGlueInfo, wlanoidSetMonitor, NULL, 0, &u4BufLen);
@@ -1115,10 +1209,10 @@ index ee6eaad..c82f9d4 100644
  #endif /* _GL_KAL_H */
 -
 diff --git a/os/linux/include/gl_os.h b/os/linux/include/gl_os.h
-index 9e2ee22..1ad133b 100644
+index 9e2ee22..ec0a1dd 100644
 --- a/os/linux/include/gl_os.h
 +++ b/os/linux/include/gl_os.h
-@@ -892,6 +892,12 @@ struct GLUE_INFO {
+@@ -892,6 +892,13 @@ struct GLUE_INFO {
  
  	uint8_t fgIsEnableMon;
  #ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
@@ -1127,6 +1221,7 @@ index 9e2ee22..1ad133b 100644
 +	u_int8_t fgMonDevActive;
 +	uint32_t u4MonRxRaw;
 +	uint32_t u4MonRxHdrTranslated;
++	uint32_t u4MonRxInvalidRaw;
 +	uint32_t u4MonRxCloneFail;
  	uint8_t ucPriChannel;
  	uint8_t ucChannelS1;

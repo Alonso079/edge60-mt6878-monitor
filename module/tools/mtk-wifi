@@ -13,6 +13,7 @@ uso:
   mtk-wifi monitor FRECUENCIA_MHZ
   mtk-wifi normal
   mtk-wifi concurrent
+  mtk-wifi survey FRECUENCIA_MHZ DURACION_MS
   mtk-wifi concurrent-stop
 EOF
 	exit 2
@@ -23,6 +24,7 @@ show_status()
 	echo "driver_residente: $([ -r "$DRIVER_READY" ] && cat "$DRIVER_READY" || echo no)"
 	echo "estado_solicitado: $([ -f "$STATE_FILE" ] && echo monitor || echo normal)"
 	echo "monitor_concurrente: $([ -r /sys/class/net/mon0/ifindex ] && echo activo || echo inactivo)"
+	echo "survey_mcc: $([ -r "$SURVEY_STATE_FILE" ] && echo activo || echo inactivo)"
 	echo "wifi_android:"
 	cmd wifi status 2>/dev/null | sed -n '1,8p' || true
 	echo "wlan0:"
@@ -40,6 +42,16 @@ enable_concurrent()
 
 	PHYINDEX=$(cat /sys/class/ieee80211/phy0/index)
 	"$MTKMON" add "$PHYINDEX" mon0 || die "cfg80211 rechazó mon0"
+	ip link set mon0 arp off || {
+		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex 2>/dev/null || true)
+		[ -z "$MON_IFINDEX" ] || "$MTKMON" del "$MON_IFINDEX" >/dev/null 2>&1 || true
+		die "no se pudo desactivar ARP en mon0"
+	}
+	ip link set mon0 multicast off || {
+		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex 2>/dev/null || true)
+		[ -z "$MON_IFINDEX" ] || "$MTKMON" del "$MON_IFINDEX" >/dev/null 2>&1 || true
+		die "no se pudo desactivar multicast en mon0"
+	}
 	ip link set mon0 up || {
 		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex 2>/dev/null || true)
 		[ -z "$MON_IFINDEX" ] || "$MTKMON" del "$MON_IFINDEX" >/dev/null 2>&1 || true
@@ -51,6 +63,7 @@ enable_concurrent()
 
 disable_concurrent()
 {
+	best_effort_stop_survey
 	if [ -r /sys/class/net/mon0/ifindex ]; then
 		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex)
 		ip link set mon0 down 2>/dev/null || true
@@ -58,6 +71,44 @@ disable_concurrent()
 	fi
 	rm -f "$CONCURRENT_STATE_FILE"
 	echo "monitor concurrente desactivado; wlan0 permanece administrado"
+}
+
+survey_channel()
+{
+	FREQUENCY=$1
+	DURATION=$2
+	case "$FREQUENCY" in
+		*[!0-9]*|'') die "frecuencia inválida: $FREQUENCY" ;;
+	esac
+	case "$DURATION" in
+		*[!0-9]*|'') die "duración inválida: $DURATION" ;;
+	esac
+	[ "$DURATION" -ge 100 ] && [ "$DURATION" -le 3000 ] || die \
+		"la duración debe estar entre 100 y 3000 ms"
+	[ -r /sys/class/net/mon0/ifindex ] || die \
+		"activa concurrent antes de survey"
+	[ -r /sys/class/net/p2p0/ifindex ] || die "p2p0 no existe"
+	[ ! -e "$SURVEY_STATE_FILE" ] || die "ya hay un survey activo"
+
+	P2P_FLAGS=$(cat /sys/class/net/p2p0/flags)
+	if [ $((P2P_FLAGS & 1)) -eq 0 ]; then
+		ip link set p2p0 up || die "no se pudo levantar p2p0"
+		echo raised > "$SURVEY_STATE_FILE"
+	else
+		echo existing > "$SURVEY_STATE_FILE"
+	fi
+
+	trap 'best_effort_stop_survey' EXIT
+	trap 'exit 1' HUP INT TERM
+	P2P_IFINDEX=$(cat /sys/class/net/p2p0/ifindex)
+	"$MTKMON" roc "$P2P_IFINDEX" "$FREQUENCY" "$DURATION" || die \
+		"firmware/cfg80211 rechazó la ventana fuera de canal"
+	WAIT_SECONDS=$(((DURATION + 999) / 1000))
+	sleep "$WAIT_SECONDS"
+	trap - HUP INT TERM
+	best_effort_stop_survey
+	trap - EXIT
+	echo "survey MCC completado: $FREQUENCY MHz durante $DURATION ms"
 }
 
 enable_monitor()
@@ -133,6 +184,11 @@ case "${1:-}" in
 		[ "$#" -eq 1 ] || usage
 		require_resident_driver
 		disable_concurrent
+		;;
+	survey)
+		[ "$#" -eq 3 ] || usage
+		require_resident_driver
+		survey_channel "$2" "$3"
 		;;
 	normal)
 		[ "$#" -eq 1 ] || usage

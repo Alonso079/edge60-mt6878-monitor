@@ -8,6 +8,7 @@ DRIVER_READY=/sys/module/$MODULE_NAME/parameters/monitor_nl80211_ready
 MTKMON="$SCRIPT_DIR/mtkmon"
 STATE_FILE=/dev/edge60-monitor-resident.active
 CONCURRENT_STATE_FILE=/dev/edge60-monitor-concurrent.active
+SURVEY_STATE_FILE=/dev/edge60-monitor-survey.active
 WMT_DEVICE=/dev/wmtWifi
 
 die()
@@ -96,8 +97,19 @@ iface_index()
 	cat /sys/class/net/wlan0/ifindex
 }
 
+best_effort_stop_survey()
+{
+	if [ -r "$SURVEY_STATE_FILE" ] &&
+	   [ "$(cat "$SURVEY_STATE_FILE" 2>/dev/null)" = raised ] &&
+	   [ -e /sys/class/net/p2p0 ]; then
+		ip link set p2p0 down 2>/dev/null || true
+	fi
+	rm -f "$SURVEY_STATE_FILE"
+}
+
 best_effort_normal()
 {
+	best_effort_stop_survey
 	if [ -r /sys/class/net/mon0/ifindex ]; then
 		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex)
 		ip link set mon0 down 2>/dev/null || true

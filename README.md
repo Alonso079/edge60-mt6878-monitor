@@ -5,9 +5,10 @@ MT6878 Wi-Fi interface in the Motorola Edge 60 (`scout`). The driver remains
 loaded while switching modes and now supports a second, concurrent monitor
 interface.
 
-Version 1.2.0-rc1 provides two operating models:
+Version 1.2.0-rc4 provides two operating models plus a time-sliced survey:
 
-- `wlan0` managed plus RX-only `mon0`, both on the same physical radio;
+- `wlan0` managed plus RX-only `mon0`, normally on the station channel;
+- short MCC survey windows on another channel while `wlan0` remains managed;
 - exclusive `wlan0` monitor mode for full capture and raw injection.
 
 ## Validated target
@@ -17,7 +18,7 @@ Version 1.2.0-rc1 provides two operating models:
 - Kernel: `6.1.145-android14-11-g25baf8f7fb12`
 - WLAN source: Motorola commit `2ba37a3`
 - Root/module manager: KernelSU Next
-- Current candidate: `1.2.0-rc1`
+- Current candidate: `1.2.0-rc4`
 
 The installer rejects other firmware builds.
 
@@ -29,17 +30,25 @@ Validated on the physical device:
 - `mon0` is created and deleted through nl80211 while `wlan0` stays associated;
 - `mon0` reports `ARPHRD_IEEE80211_RADIOTAP`;
 - `tcpdump` captured valid Beacons and Probe Responses as Radiotap/802.11;
-- a 106-packet script-driven capture reported zero kernel drops;
-- `tshark` found no malformed frames in the independently checked capture;
-- changing `mon0` to a different channel while station is active is rejected;
+- the final 144-packet mixed home/MCC capture reported zero kernel drops;
+- all 144 packets decoded as Radiotap version 0 management frames and
+  `tshark` found zero malformed packets;
+- a fixed second channel is rejected because the firmware reports `RSDB:0` and
+  DBDC disabled;
+- remain-on-channel survey windows capture management traffic off-channel;
+- `mon0` has no IP multicast participation, preventing local Ethernet/IPv6
+  packets from contaminating Radiotap captures;
 - five create/use/delete cycles completed while station traffic continued;
 - deleting `mon0` preserves the station association and IP;
 - no kernel panic, BUG, driver assert or firmware reset was observed.
+- station connectivity completed 12/12 probes during the final survey test.
 
 The fullmac firmware exposes raw management RX while associated. Normal data RX
 remains firmware-translated Ethernet traffic on `wlan0`, so concurrent `mon0`
 does not contain every station data frame. It is deliberately RX-only. Use
 exclusive monitor mode when raw TX or the existing full monitor path is needed.
+Off-channel survey is MCC time slicing, so the station pauses briefly during
+each requested window. It is not simultaneous dual-channel reception.
 
 ## Daily use
 
@@ -48,6 +57,7 @@ Concurrent capture without disconnecting Android Wi-Fi:
 ```sh
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi concurrent'
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/capture.sh /data/local/tmp/capture.pcap'
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi survey 2412 250'
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi concurrent-stop'
 ```
 

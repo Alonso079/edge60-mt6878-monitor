@@ -2,12 +2,12 @@
 
 ## Implemented result
 
-Version 1.2.0-rc1 supports this topology on the MT6878 radio:
+Version 1.2.0-rc4 supports this topology on the MT6878 radio:
 
 ```text
 wlan0: managed, associated, normal Android traffic
 mon0:  monitor, Radiotap/IEEE 802.11 management RX
-radio: one physical channel shared by both interfaces
+radio: station channel plus bounded, time-sliced MCC survey windows
 ```
 
 The implementation keeps AIS and the Android station netdev intact. Creating
@@ -28,7 +28,10 @@ not change the station association.
 6. `mon0` TX is dropped by design in concurrent mode.
 7. Driver shutdown unregisters a remaining monitor netdev safely.
 8. A minimal vendor Radiotap fallback covers management frames without complete
-   RXV groups.
+   RXV groups and still publishes the standard channel field.
+9. Frame-control validation admits only real raw management frames to `mon0`.
+10. The monitor netdev has ARP and multicast disabled to prevent locally
+    generated Ethernet/IPv6 packets from entering Radiotap captures.
 
 ## Device acceptance test
 
@@ -45,13 +48,24 @@ The physical-device test confirmed all milestone conditions:
 - five create/delete lifecycle cycles succeeded;
 - removing `mon0` left station traffic operational;
 - no panic, BUG, assert or firmware reset appeared in the checked logs.
+- the final 144-packet mixed home/off-channel capture decoded with Radiotap
+  version 0, management type only and zero malformed packets;
+- MCC survey cleanup returned `p2p0` to its original DOWN state.
+- station connectivity completed 12/12 probes during that test.
 
 ## Hardware limitation
+
+The firmware reports `RSDB:0` and `DBDC Mode: Disable`, so two simultaneous
+channels are unavailable. A conflicting fixed monitor frequency returns
+`-EBUSY`. The `survey` command instead uses cfg80211 remain-on-channel and
+temporarily time-slices the single radio. Short 100-250 ms dwell times reduce
+the latency impact on the station; a measured 1 s dwell produced about 1 s of
+added latency.
 
 This MediaTek fullmac configuration translates ordinary station data frames to
 Ethernet before host RX. The host receives raw 802.11 management frames, which
 are the frames cloned to `mon0`. Concurrent capture therefore does not expose
-all data MPDUs or support arbitrary channel hopping.
+all data MPDUs.
 
 Exclusive `wlan0` monitor mode remains available for the firmware monitor path
 and raw injection. An external receiver is still needed to prove over-the-air
