@@ -1,0 +1,507 @@
+diff --git a/Kbuild.6878 b/Kbuild.6878
+index 61051a7..22f5e48 100644
+--- a/Kbuild.6878
++++ b/Kbuild.6878
+@@ -11,4 +11,11 @@ MTK_ANDROID_WMT := y
+ MTK_ANDROID_EMI := y
+ MODULE_NAME := wlan_drv_gen4m_6878
+ 
++# Build the standard cfg80211 monitor and Radiotap path for this platform.
++CONFIG_SNIFFER_RADIOTAP := y
++
+ include $(KO_CODE_PATH)/Kbuild.main
++
++# Kbuild.main initializes ccflags-y, so platform overrides belong after it.
++# MT6878 exposes the primary physical radio as monitor band index 0.
++ccflags-y += -DCFG_MONITOR_DEFAULT_BAND_IDX=0
+diff --git a/chips/common/pre_cal.c b/chips/common/pre_cal.c
+index 3465cfe..b6f7933 100644
+--- a/chips/common/pre_cal.c
++++ b/chips/common/pre_cal.c
+@@ -43,8 +43,13 @@ u_int8_t gEmiCalNoUseEmiData;
+ static u_int8_t g_fgPreCal;
+ static u_int8_t g_fgCalDisabled;
+ #if CFG_MTK_ANDROID_WMT
++#if defined(CFG_EDGE60_HOTSWAP_MONITOR)
++/* The stock driver completed conninfra pre-calibration before this live swap. */
++static u_int8_t g_fgEverCal = TRUE;
++#else
+ static u_int8_t g_fgEverCal = FALSE;
+ #endif
++#endif
+ 
+ /*******************************************************************************
+  *                              F U N C T I O N S
+diff --git a/include/config.h b/include/config.h
+index 2d216fb..bb7b7d7 100644
+--- a/include/config.h
++++ b/include/config.h
+@@ -722,6 +722,9 @@
+ 
+ #ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
+ #define CFG_MONITOR_BAND_NUM	3
++#ifndef CFG_MONITOR_DEFAULT_BAND_IDX
++#define CFG_MONITOR_DEFAULT_BAND_IDX	0xFF
++#endif
+ /* HW design: headroom size can only be 128 alignment */
+ #define CFG_RADIOTAP_HEADROOM	128
+ #endif
+diff --git a/nic/nic_tx.c b/nic/nic_tx.c
+index 33cae47..bf77875 100644
+--- a/nic/nic_tx.c
++++ b/nic/nic_tx.c
+@@ -3422,8 +3422,17 @@ u_int8_t nicTxFillMsduInfo(struct ADAPTER *prAdapter,
+ 	prGlueInfo = prAdapter->prGlueInfo;
+ 	ASSERT(prGlueInfo);
+ 
+-	kalGetEthDestAddr(prAdapter->prGlueInfo, prPacket,
+-			  prMsduInfo->aucEthDestAddr);
++	if (GLUE_TEST_PKT_FLAG(prPacket, ENUM_PKT_802_11)) {
++		/* Addr1 is the receiver address in every supported 802.11 frame. */
++		kalGetPacketBuf(prPacket, &pucData);
++		if (!pucData || GLUE_GET_PKT_FRAME_LEN(prPacket) < 10)
++			return FALSE;
++		kalMemCopy(prMsduInfo->aucEthDestAddr, pucData + 4,
++			MAC_ADDR_LEN);
++	} else {
++		kalGetEthDestAddr(prAdapter->prGlueInfo, prPacket,
++				  prMsduInfo->aucEthDestAddr);
++	}
+ 
+ 	prMsduInfo->prPacket = prPacket;
+ 	prMsduInfo->ucBssIndex = GLUE_GET_PKT_BSS_IDX(prPacket);
+@@ -3455,10 +3464,14 @@ u_int8_t nicTxFillMsduInfo(struct ADAPTER *prAdapter,
+ 					ENUM_PKT_802_3) ? TRUE : FALSE;
+ 		prMsduInfo->fgIsVlanExists = GLUE_TEST_PKT_FLAG(prPacket,
+ 			ENUM_PKT_VLAN_EXIST) ? TRUE : FALSE;
+-#if CFG_SUPPORT_TX_MGMT_USE_DATAQ
+ 		prMsduInfo->fgIs802_11 = GLUE_TEST_PKT_FLAG(prPacket,
+-					 ENUM_PKT_802_11_MGMT) ? TRUE : FALSE;
++					 ENUM_PKT_802_11) ? TRUE : FALSE;
++#if CFG_SUPPORT_TX_MGMT_USE_DATAQ
++		if (GLUE_TEST_PKT_FLAG(prPacket, ENUM_PKT_802_11_MGMT))
++			prMsduInfo->fgIs802_11 = TRUE;
+ #endif
++		if (prMsduInfo->fgIs802_11)
++			prMsduInfo->u4Option |= MSDU_OPT_NO_AGGREGATE;
+ 
+ 		if (prMsduInfo->fgIs802_1x) {
+ 			kalGetPacketBuf(prPacket, &pucData);
+@@ -6090,6 +6103,25 @@ uint32_t nicTxDirectStartXmitMain(void *pvPacket,
+ 				QM_DBG_CNT_INC(prQM, QM_DBG_CNT_23);
+ 				break;
+ 			case STA_REC_INDEX_NOT_FOUND:
++#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++				/* TX-INJECT: In monitor mode, there is intentionally no
++				 * station record (we're not associated). Redirect injected
++				 * raw 802.11 frames to the broadcast/multicast DMA queue
++				 * so nicTxGetWlanIdx can assign the default WTBL index.
++				 */
++				if (prAdapter->prGlueInfo->fgIsEnableMon &&
++				    GLUE_TEST_PKT_FLAG(prMsduInfo->prPacket,
++						       ENUM_PKT_802_11)) {
++					DBGLOG_LIMITED(QM, WARN,
++						"[TX-INJECT] redir STA_NOT_FOUND -> BMCAST\n");
++					prMsduInfo->ucStaRecIndex = STA_REC_INDEX_BMCAST;
++					ucTC = nicTxWmmTc2ResTc(prAdapter,
++						prMsduInfo->ucBssIndex,
++						NET_TC_BMC_INDEX);
++					QM_DBG_CNT_INC(prQM, QM_DBG_CNT_23);
++					break;
++				}
++#endif
+ 				/* Drop packet if no STA_REC is found */
+ 				DBGLOG(QM, TRACE,
+ 					"Drop the Packet for no STA_REC\n");
+@@ -7037,4 +7069,3 @@ uint8_t nicTxResTc2WmmTc(uint8_t ucResTC)
+ 
+ 	return ucTcIdx;
+ }
+-
+diff --git a/nic/nic_txd_v2.c b/nic/nic_txd_v2.c
+index a26bf89..01194ad 100644
+--- a/nic/nic_txd_v2.c
++++ b/nic/nic_txd_v2.c
+@@ -269,7 +269,7 @@ void nic_txd_v2_compose(
+ 	enum ENUM_WF_PATH_FAVOR_T eWfPathFavor;
+ #endif
+ 	struct WLAN_MAC_HEADER *prWlanHeader = NULL;
+-#if CFG_SUPPORT_TX_MGMT_USE_DATAQ
++#if CFG_SUPPORT_TX_MGMT_USE_DATAQ || defined(CFG_SUPPORT_SNIFFER_RADIOTAP)
+ 	uint8_t *pucBuff = NULL;
+ 	uint32_t u4TxHeadRoomSize;
+ #endif
+@@ -407,7 +407,10 @@ void nic_txd_v2_compose(
+ 	HAL_MAC_CONNAC2X_TXD_SET_TID(prTxDesc, prMsduInfo->ucUserPriority);
+ 
+ 	/* Protection */
+-	if (secIsProtectedFrame(prAdapter, prMsduInfo, prStaRec)) {
++	if (!(prMsduInfo->fgIs802_11 &&
++	      prMsduInfo->ucPacketType == TX_PACKET_TYPE_DATA &&
++	      prMsduInfo->eSrc == TX_PACKET_OS) &&
++	    secIsProtectedFrame(prAdapter, prMsduInfo, prStaRec)) {
+ 		/* Update Packet option, */
+ 		/* PF bit will be set in nicTxFillDescByPktOption() */
+ 		if ((prStaRec
+@@ -460,6 +463,16 @@ void nic_txd_v2_compose(
+ 
+ 	/* Type */
+ 	if (prMsduInfo->fgIs802_11) {
++#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++		if (prMsduInfo->ucPacketType == TX_PACKET_TYPE_DATA &&
++		    prMsduInfo->eSrc == TX_PACKET_OS) {
++			u4TxHeadRoomSize = u4TxDescLength +
++				prAdapter->chip_info->txd_append_size;
++			kalGetPacketBuf(prMsduInfo->prPacket, &pucBuff);
++			prWlanHeader = (struct WLAN_MAC_HEADER *)
++				(pucBuff + u4TxHeadRoomSize);
++		} else
++#endif
+ #if CFG_SUPPORT_TX_MGMT_USE_DATAQ
+ 		if (prMsduInfo->ucPktType == ENUM_PKT_802_11_MGMT) {
+ 			u4TxHeadRoomSize = NIC_TX_DESC_AND_PADDING_LENGTH +
+diff --git a/nic/que_mgt.c b/nic/que_mgt.c
+index e0ae8e2..d04d4f5 100644
+--- a/nic/que_mgt.c
++++ b/nic/que_mgt.c
+@@ -64,6 +64,19 @@ const uint8_t *apucACI2Str[WMM_AC_INDEX_NUM] = {
+ 	"BE", "BK", "VI", "VO"
+ };
+ 
++static u_int8_t qmIsMonitorInjection(struct ADAPTER *prAdapter,
++	struct MSDU_INFO *prMsduInfo)
++{
++#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++	return prAdapter && prAdapter->prGlueInfo &&
++		prAdapter->prGlueInfo->fgIsEnableMon && prMsduInfo &&
++		prMsduInfo->eSrc == TX_PACKET_OS && prMsduInfo->prPacket &&
++		GLUE_TEST_PKT_FLAG(prMsduInfo->prPacket, ENUM_PKT_802_11);
++#else
++	return FALSE;
++#endif
++}
++
+ const uint8_t arNetwork2TcResource[MAX_BSSID_NUM + 1][NET_TC_NUM] = {
+ 	/* HW Queue Set 1 */
+ 	/* AC_BE, AC_BK, AC_VI, AC_VO, MGMT, BMC */
+@@ -1193,7 +1206,9 @@ struct MSDU_INFO *qmEnqueueTxPackets(struct ADAPTER *prAdapter,
+ 		if (!prBssInfo) {
+ 			/* No BSS_INFO */
+ 			fgDropPacket = TRUE;
+-		} else if (IS_BSS_ACTIVE(prBssInfo)) {
++		} else if (IS_BSS_ACTIVE(prBssInfo) ||
++			   qmIsMonitorInjection(prAdapter,
++				prCurrentMsduInfo)) {
+ 			/* BSS active */
+ 			fgDropPacket = FALSE;
+ 		} else {
+@@ -1233,6 +1248,25 @@ struct MSDU_INFO *qmEnqueueTxPackets(struct ADAPTER *prAdapter,
+ 				break;
+ 
+ 			case STA_REC_INDEX_NOT_FOUND:
++				if (qmIsMonitorInjection(prAdapter,
++						prCurrentMsduInfo)) {
++					prCurrentMsduInfo->ucStaRecIndex =
++						STA_REC_INDEX_BMCAST;
++					prTxQue = &prQM->arTxQueue[
++						TX_QUEUE_INDEX_BMCAST];
++					ucTC = nicTxWmmTc2ResTc(prAdapter,
++						prCurrentMsduInfo->ucBssIndex,
++						NET_TC_BMC_INDEX);
++					if (!(prCurrentMsduInfo->u4Option &
++					      MSDU_OPT_MANUAL_RETRY_LIMIT))
++						nicTxSetPktRetryLimit(
++							prCurrentMsduInfo,
++							TX_DESC_TX_COUNT_NO_LIMIT);
++					DBGLOG_LIMITED(QM, WARN,
++						"[TX-INJECT] QM redirect STA_NOT_FOUND -> BMCAST\n");
++					QM_DBG_CNT_INC(prQM, QM_DBG_CNT_23);
++					break;
++				}
+ 				/* Drop packet if no STA_REC is found */
+ 				DBGLOG(QM, INFO,
+ 					"Drop the Packet for no STA_REC\n");
+@@ -2093,8 +2127,11 @@ qmDequeueTxPacketsFromGlobalQueue(struct ADAPTER *prAdapter,
+ 		prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter,
+ 			prDequeuedPkt->ucBssIndex);
+ 
+-		if (prBssInfo && IS_BSS_ACTIVE(prBssInfo)) {
+-			if (!isNetAbsent(prAdapter, prBssInfo)
++		if (prBssInfo && (IS_BSS_ACTIVE(prBssInfo) ||
++				  qmIsMonitorInjection(prAdapter,
++					prDequeuedPkt))) {
++			if ((!isNetAbsent(prAdapter, prBssInfo) ||
++			     qmIsMonitorInjection(prAdapter, prDequeuedPkt))
+ #if (CFG_TX_RSRC_WMM_ENHANCE == 1)
+ 				&& ucTC == prDequeuedPkt->ucTC
+ #endif
+diff --git a/os/linux/gl_cfg80211.c b/os/linux/gl_cfg80211.c
+index 3cc5a3f..f91f559 100644
+--- a/os/linux/gl_cfg80211.c
++++ b/os/linux/gl_cfg80211.c
+@@ -6006,6 +6006,7 @@ void mtk_init_monitor_role(struct wiphy *wiphy,
+ 		      struct net_device *ndev)
+ {
+ 	struct GLUE_INFO *prGlueInfo;
++	struct NETDEV_PRIVATE_GLUE_INFO *prNdevPriv;
+ 	uint8_t i = 0;
+ 
+ 	WIPHY_PRIV(wiphy, prGlueInfo);
+@@ -6020,14 +6021,31 @@ void mtk_init_monitor_role(struct wiphy *wiphy,
+ 		NL80211_IFTYPE_MONITOR);
+ 	ndev->type = ARPHRD_IEEE80211_RADIOTAP;
+ 	ndev->ieee80211_ptr->iftype = NL80211_IFTYPE_MONITOR;
++	/* mtk_uninit_sta_role() invalidates this index while leaving wlan0 as
++	 * the monitor netdev.  TX still needs the default AIS BSS_INFO to reach
++	 * the driver's queue manager, even though no AP association exists.
++	 */
++	prNdevPriv = (struct NETDEV_PRIVATE_GLUE_INFO *)netdev_priv(ndev);
++	prNdevPriv->ucBssIdx = AIS_DEFAULT_INDEX;
+ 	prGlueInfo->fgIsEnableMon = TRUE;
+-	prGlueInfo->ucBandIdx = 0xFF;
++	/*
++	 * Select the platform default physical radio so the standard nl80211
++	 * channel callback can enable firmware monitor mode without a follow-up
++	 * private MONITOR= command. Engineering builds may still override it.
++	 */
++	prGlueInfo->ucBandIdx = CFG_MONITOR_DEFAULT_BAND_IDX;
+ 	prGlueInfo->fgDropFcsErrorFrame = TRUE;
+ 	prGlueInfo->u2Aid = 0;
+ 	for (i = 0; i < CFG_MONITOR_BAND_NUM; i++) {
+ 		prGlueInfo->aucBandIdxEn[i] = 0;
+ 		prGlueInfo->u4AmpduRefNum[i] = 0;
+ 	}
++	/* A monitor interface has no association event to raise carrier.  Keep
++	 * the netdev TX path operational so AF_PACKET injection reaches the
++	 * driver's ndo_start_xmit callback.
++	 */
++	netif_carrier_on(ndev);
++	netif_tx_wake_all_queues(ndev);
+ 	DBGLOG(INIT, INFO, "enable sniffer mode\n");
+ }
+ 
+@@ -6059,6 +6077,7 @@ void mtk_uninit_monitor_role(struct wiphy *wiphy,
+ 		prGlueInfo->ucBandIdx = 0xFF;
+ 	}
+ 
++	netif_carrier_off(ndev);
+ 	ndev->type = ARPHRD_ETHER;
+ 	ndev->ieee80211_ptr->iftype = NL80211_IFTYPE_STATION;
+ 	DBGLOG(INIT, INFO, "disable sniffer mode\n");
+@@ -8543,6 +8562,11 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+ 		case NL80211_BAND_5GHZ:
+ 			ucBand = BAND_5G;
+ 			break;
++#if (CFG_SUPPORT_WIFI_6G == 1)
++		case NL80211_BAND_6GHZ:
++			ucBand = BAND_6G;
++			break;
++#endif
+ 		default:
+ 			return -EFAULT;
+ 		}
+@@ -8564,6 +8588,7 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+ 			else
+ 				ucSco = CHNL_EXT_SCB;
+ 			break;
++		case NL80211_CHAN_WIDTH_20_NOHT:
+ 		case NL80211_CHAN_WIDTH_20:
+ 			ucChannelWidth = CW_20_40MHZ;
+ 			break;
+@@ -8580,6 +8605,11 @@ int mtk_cfg80211_set_monitor_channel(struct wiphy *wiphy,
+ 	prGlueInfo->ucSco = ucSco;
+ 
+ 	rStatus = kalIoctl(prGlueInfo, wlanoidSetMonitor, NULL, 0, &u4BufLen);
++	if (rStatus != WLAN_STATUS_SUCCESS) {
++		DBGLOG(REQ, ERROR,
++			"set monitor channel failed, status=0x%x\n", rStatus);
++		return -EIO;
++	}
+ 
+ 	return 0;
+ }
+diff --git a/os/linux/gl_init.c b/os/linux/gl_init.c
+index 1df2590..2119510 100644
+--- a/os/linux/gl_init.c
++++ b/os/linux/gl_init.c
+@@ -174,6 +174,15 @@ module_param_named(ap, gprifnameap, charp, 0000);
+ char *gprifnamenvram = "";
+ module_param_named(nvram, gprifnamenvram, charp, 0000);
+ 
++#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++/* Lets the userspace mode switcher reject the stock, monitor-less module. */
++static char *g_pucMonitorNl80211Ready = "Y";
++module_param_named(monitor_nl80211_ready,
++		g_pucMonitorNl80211Ready, charp, 0444);
++MODULE_PARM_DESC(monitor_nl80211_ready,
++	"standard nl80211 monitor mode with MT6878 band selection");
++#endif
++
+ /* NIC interface name */
+ #ifdef CFG_COMBO_SLT_GOLDEN
+ #define NIC_INF_NAME    "ra%d"
+@@ -448,6 +457,11 @@ uint8_t	uacEEPROMImage[MAX_EEPROM_BUFFER_SIZE] = {
+ #endif
+ 
+ #ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++#ifndef CFG_SUPPORT_SNIFFER_RADIOTAP_DEBUGFS
++#define CFG_SUPPORT_SNIFFER_RADIOTAP_DEBUGFS 0
++#endif
++
++#if CFG_SUPPORT_SNIFFER_RADIOTAP_DEBUGFS
+ static struct dentry *dbgFsDir;
+ 
+ static int debugfs_u8_get(void *data, uint64_t *val)
+@@ -508,6 +522,17 @@ void sysRemoveMonDbgFs(void)
+ {
+ 	debugfs_remove_recursive(dbgFsDir);
+ }
++#else
++int32_t sysCreateMonDbgFs(struct GLUE_INFO *prGlueInfo)
++{
++	(void)prGlueInfo;
++	return 0;
++}
++
++void sysRemoveMonDbgFs(void)
++{
++}
++#endif /* CFG_SUPPORT_SNIFFER_RADIOTAP_DEBUGFS */
+ #endif
+ 
+ /*  For DTV Ref project -> Default enable */
+diff --git a/os/linux/gl_kal.c b/os/linux/gl_kal.c
+index bbdc1c2..1e0c682 100644
+--- a/os/linux/gl_kal.c
++++ b/os/linux/gl_kal.c
+@@ -3735,10 +3735,32 @@ kalHardStartXmit(struct sk_buff *prOrgSkb,
+ 
+ 	if (prBssInfo->eNetworkType == NETWORK_TYPE_AIS &&
+ 		prBssInfo->eConnectionState != MEDIA_STATE_CONNECTED) {
++#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++		/*
++		 * TX-INJECT BYPASS: When the radio is in monitor/sniffer mode
++		 * the BSS is intentionally disconnected (no AP association).
++		 * Allow raw 802.11 frames from userspace to pass through so that
++		 * standard injection tools (aireplay-ng, mdk4, scapy, etc.) can
++		 * work over the AF_PACKET / SOCK_RAW interface.
++		 *
++		 * Safety gate: we only bypass when the driver is actually in
++		 * monitor mode. Normal AP/STA traffic still goes through the
++		 * regular disconnection check.
++		 */
++		if (!prGlueInfo->fgIsEnableMon) {
++			DBGLOG(INIT, INFO,
++				"ais status is not connected, skip this frame\n");
++			dev_kfree_skb(prOrgSkb);
++			return WLAN_STATUS_NOT_ACCEPTED;
++		}
++		DBGLOG_LIMITED(INIT, WARN,
++			"[TX-INJECT] monitor mode: bypassing AIS conn check\n");
++#else
+ 		DBGLOG(INIT, INFO,
+ 			"ais status is not connected, skip this frame\n");
+ 		dev_kfree_skb(prOrgSkb);
+ 		return WLAN_STATUS_NOT_ACCEPTED;
++#endif
+ 	}
+ 
+ 	if (prGlueInfo->prAdapter->fgIsEnableLpdvt) {
+@@ -3812,6 +3834,97 @@ kalHardStartXmit(struct sk_buff *prOrgSkb,
+ 	GLUE_SET_PKT_BSS_IDX(prSkb, ucBssIndex);
+ 
+ 	/* Parsing frame info */
++#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
++	if (prGlueInfo->fgIsEnableMon) {
++		uint8_t *pucFrame = prSkb->data;
++		uint16_t u2RadiotapLen = 0;
++		uint16_t u2FrameCtrl;
++		uint8_t ucMacHeaderLen;
++		uint32_t u4SysTime;
++		u_int8_t fgHasRadiotap = FALSE;
++		u_int8_t fgValid80211 = TRUE;
++
++		/*
++		 * Linux monitor interfaces use ARPHRD_IEEE80211_RADIOTAP.  Strip the
++		 * userspace metadata before DMA; the firmware must receive the native
++		 * IEEE 802.11 MPDU starting at Frame Control.  Keep accepting a bare
++		 * MPDU for the small native diagnostic tool.
++		 */
++		if (prSkb->len >= 8 && pucFrame[0] == 0 && pucFrame[1] == 0) {
++			u2RadiotapLen = (uint16_t)pucFrame[2] |
++				((uint16_t)pucFrame[3] << 8);
++			if (u2RadiotapLen >= 8 && u2RadiotapLen <= prSkb->len) {
++				skb_pull(prSkb, u2RadiotapLen);
++				pucFrame = prSkb->data;
++				fgHasRadiotap = TRUE;
++			}
++		}
++
++		if (prSkb->len < 10) {
++			fgValid80211 = FALSE;
++			u2FrameCtrl = 0;
++		} else {
++			u2FrameCtrl = (uint16_t)pucFrame[0] |
++				((uint16_t)pucFrame[1] << 8);
++			/* Protocol version must be zero; type 3 is reserved. */
++			if ((u2FrameCtrl & BITS(0, 1)) != 0 ||
++			    (u2FrameCtrl & MASK_FC_TYPE) == MASK_FC_TYPE)
++				fgValid80211 = FALSE;
++		}
++
++		ucMacHeaderLen = WLAN_MAC_MGMT_HEADER_LEN;
++		if (fgValid80211) {
++			switch (u2FrameCtrl & MASK_FC_TYPE) {
++			case MAC_FRAME_TYPE_MGT:
++				ucMacHeaderLen = WLAN_MAC_MGMT_HEADER_LEN;
++				break;
++			case MAC_FRAME_TYPE_CTRL:
++				/* ACK and CTS only contain RA; other control frames
++				 * have at least RA and TA.
++				 */
++				if ((u2FrameCtrl & MASK_FC_SUBTYPE) == 0x00c0 ||
++				    (u2FrameCtrl & MASK_FC_SUBTYPE) == 0x00d0)
++					ucMacHeaderLen = 10;
++				else
++					ucMacHeaderLen = 16;
++				break;
++			case MAC_FRAME_TYPE_DATA:
++				ucMacHeaderLen = WLAN_MAC_MGMT_HEADER_LEN;
++				if ((u2FrameCtrl & MASK_TO_DS_FROM_DS) ==
++				    MASK_TO_DS_FROM_DS)
++					ucMacHeaderLen += 6;
++				if (u2FrameCtrl & MASK_FC_SUBTYPE_QOS_DATA) {
++					ucMacHeaderLen += 2;
++					if (u2FrameCtrl & MASK_FC_ORDER)
++						ucMacHeaderLen += 4;
++				}
++				break;
++			default:
++				fgValid80211 = FALSE;
++				break;
++			}
++		}
++
++		if (!fgValid80211 || prSkb->len < ucMacHeaderLen ||
++		    prSkb->len > 0xffffU) {
++			DBGLOG(TX, WARN,
++				"[TX-INJECT] reject malformed frame len=%u rtap=%u\n",
++				prSkb->len, u2RadiotapLen);
++			dev_kfree_skb(prSkb);
++			return WLAN_STATUS_INVALID_PACKET;
++		}
++
++		GLUE_SET_PKT_FLAG(prSkb, ENUM_PKT_802_11);
++		GLUE_SET_PKT_HEADER_LEN(prSkb, ucMacHeaderLen);
++		GLUE_SET_PKT_FRAME_LEN(prSkb, (uint16_t)prSkb->len);
++		u4SysTime = (OS_SYSTIME)kalGetTimeTick();
++		GLUE_SET_PKT_ARRIVAL_TIME(prSkb, u4SysTime);
++		GLUE_SET_PKT_TID(prSkb, 0);
++		DBGLOG_LIMITED(TX, WARN,
++			"[TX-INJECT] raw 802.11 len=%u hdr=%u rtap=%u\n",
++			prSkb->len, ucMacHeaderLen, fgHasRadiotap);
++	} else
++#endif
+ 	if (!wlanProcessTxFrame(prGlueInfo->prAdapter,
+ 				(void *) prSkb)) {
+ 		/* Cannot extract packet */

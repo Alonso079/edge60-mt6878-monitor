@@ -1,0 +1,98 @@
+#!/system/bin/sh
+set -u
+
+SELF_DIR=${0%/*}
+[ "$SELF_DIR" = "$0" ] && SELF_DIR=.
+. "$SELF_DIR/common.sh"
+
+usage()
+{
+	cat >&2 <<'EOF'
+uso:
+  mtk-wifi status
+  mtk-wifi monitor FRECUENCIA_MHZ
+  mtk-wifi normal
+EOF
+	exit 2
+}
+
+show_status()
+{
+	echo "driver_residente: $([ -r "$DRIVER_READY" ] && cat "$DRIVER_READY" || echo no)"
+	echo "estado_solicitado: $([ -f "$STATE_FILE" ] && echo monitor || echo normal)"
+	echo "wifi_android:"
+	cmd wifi status 2>/dev/null | sed -n '1,8p' || true
+	echo "wlan0:"
+	ip -details link show wlan0 2>/dev/null || echo "ausente"
+}
+
+enable_monitor()
+{
+	FREQUENCY=$1
+	case "$FREQUENCY" in
+		*[!0-9]*|'') die "frecuencia inválida: $FREQUENCY" ;;
+	esac
+
+	# Android must release the fullmac interface before cfg80211 changes its
+	# type. The kernel module remains loaded throughout this transition.
+	stop_android_wifi
+	power_off_wifi
+	require_resident_driver
+	power_on_wifi_for_monitor
+
+	IFINDEX=$(iface_index)
+	ip link set wlan0 down || {
+		best_effort_normal
+		die "no se pudo bajar wlan0"
+	}
+	"$MTKMON" iface "$IFINDEX" monitor || {
+		best_effort_normal
+		die "cfg80211 rechazó NL80211_IFTYPE_MONITOR"
+	}
+	ip link set wlan0 up || {
+		best_effort_normal
+		die "no se pudo levantar wlan0 en monitor"
+	}
+	"$MTKMON" channel "$IFINDEX" "$FREQUENCY" || {
+		best_effort_normal
+		die "cfg80211 o el firmware rechazó $FREQUENCY MHz"
+	}
+	touch "$STATE_FILE"
+	echo "monitor activo en wlan0, $FREQUENCY MHz"
+}
+
+enable_normal()
+{
+	if [ -r /sys/class/net/wlan0/ifindex ]; then
+		IFINDEX=$(iface_index)
+		ip link set wlan0 down 2>/dev/null || true
+		"$MTKMON" iface "$IFINDEX" station 2>/dev/null || true
+	fi
+	power_off_wifi
+	rm -f "$STATE_FILE"
+	start_android_wifi
+	wait_for_interface present || die "Android no recreó wlan0"
+	echo "modo normal solicitado; Android está recuperando la asociación"
+}
+
+require_root
+check_device
+
+case "${1:-}" in
+	status)
+		show_status
+		;;
+	monitor)
+		[ "$#" -eq 2 ] || usage
+		require_resident_driver
+		enable_monitor "$2"
+		;;
+	normal)
+		[ "$#" -eq 1 ] || usage
+		require_resident_driver
+		enable_normal
+		;;
+	*)
+		usage
+		;;
+esac

@@ -1,0 +1,7 @@
+id=edge60_wlan_monitor
+name=Edge 60 MT6878 Resident Monitor
+version=1.1.3
+versionCode=113
+architecture=arm64
+author=Diogenes + Codex
+description=Loads the ABI-matched MT6878 WLAN driver with nl80211 monitor, Radiotap RX and raw 802.11 TX; falls back to stock automatically if insertion fails.

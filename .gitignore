@@ -1,0 +1,9 @@
+.build/
+dist/
+*.ko
+*.zip
+*.pcap
+*.symvers
+*.log
+__pycache__/
+.DS_Store

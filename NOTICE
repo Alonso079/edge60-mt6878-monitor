@@ -1,0 +1,7 @@
+The driver patch targets Motorola's published MT6878 gen4m kernel source at
+commit 2ba37a3. Patched source files retain their original license notices.
+The helper programs and packaging scripts in this repository are distributed
+under GPL-2.0-only unless a file states another license.
+
+No proprietary firmware, device NVRAM, complete Motorola source tree, private
+keys, captured network traffic, or unstripped kernel modules are included.

@@ -1,0 +1,9 @@
+# Replace only the early module-loader command. The original early-init action
+# still starts insmod_sh and the original service domain is retained.
+service insmod_sh /vendor/bin/init.insmod.sh /metadata/edge60_wlan_monitor/init.insmod.mt6878.cfg
+    class main
+    user root
+    group root system
+    disabled
+    oneshot
+    override
