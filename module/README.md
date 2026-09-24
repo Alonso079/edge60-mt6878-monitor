@@ -2,11 +2,10 @@
 
 Target: Motorola Edge 60 `scout`, firmware `W1VCS36H.14-20-19-7`.
 
-At `early-init`, this KernelSU module overrides the existing `insmod_sh`
-service while retaining Motorola's loader executable and SELinux domain. It
-loads the stock module lists in their original order, inserts the ABI-matched
-resident WLAN driver at the original WLAN slot, and immediately requests the
-stock module name as a fail-safe. If resident insertion fails, stock is loaded.
+At `early-init`, this KernelSU module overrides the existing `insmod_sh` service
+while retaining Motorola's loader and SELinux domain. It inserts the ABI-matched
+resident WLAN driver at the original WLAN slot and requests the stock module as
+a fail-safe if resident insertion fails.
 
 After reboot, verify:
 
@@ -15,16 +14,18 @@ su -c 'cat /sys/module/wlan_drv_gen4m_6878/parameters/monitor_nl80211_ready'
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi status'
 ```
 
-The mode switcher keeps the driver resident. It never calls `rmmod` or `insmod`:
+Concurrent capture keeps Android Wi-Fi connected:
 
 ```sh
-su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi monitor 2412'
-su -c '/data/adb/modules/edge60_wlan_monitor/tools/capture.sh /data/local/tmp/capture.pcap'
-su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi normal'
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi concurrent'
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/capture.sh /data/local/tmp/concurrent.pcap'
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi concurrent-stop'
 ```
 
-Basic injection validation uses a harmless broadcast Probe Request. The tool
-sends a standard minimal Radiotap header followed by an IEEE 802.11 frame:
+Concurrent `mon0` is RX-only and receives raw management frames exposed by the
+fullmac firmware. Normal data traffic remains on `wlan0` as Ethernet.
+
+Exclusive monitor mode retains the existing injection path:
 
 ```sh
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi monitor 2412'
@@ -32,6 +33,4 @@ su -c '/data/adb/modules/edge60_wlan_monitor/tools/test_inject wlan0'
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi normal'
 ```
 
-Driver log messages prove that the packet passed validation and reached the
-hardware TX path. Confirming over-the-air transmission still requires another
-radio capturing on the same channel.
+Never unload the WLAN module live. Use the mode tools or a cold reboot.

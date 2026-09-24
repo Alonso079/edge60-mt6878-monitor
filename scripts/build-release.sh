@@ -8,6 +8,7 @@ DIST="$ROOT/dist"
 PATCH="$ROOT/patches/mt6878-nl80211-monitor.patch"
 MODULE_TEMPLATE="$ROOT/module"
 SOURCE_REV=${EDGE60_SOURCE_REV:-2ba37a3}
+DRIVER_BUILD_DATE=${EDGE60_DRIVER_BUILD_DATE:-$(date -u +%Y%m%d%H%M%S)}
 
 : "${EDGE60_WLAN_SOURCE:?set EDGE60_WLAN_SOURCE to a clean Motorola gen4m repository}"
 : "${EDGE60_KERNEL:?set EDGE60_KERNEL to kernel-mtk}"
@@ -44,12 +45,20 @@ FILES=(
     Kbuild.6878
     chips/common/pre_cal.c
     include/config.h
+    include/nic/radiotap.h
+    nic/nic_rx.c
+    nic/nic_rxd_v2.c
     nic/nic_tx.c
     nic/nic_txd_v2.c
     nic/que_mgt.c
+    nic/radiotap.c
     os/linux/gl_cfg80211.c
     os/linux/gl_init.c
     os/linux/gl_kal.c
+    os/linux/gl_p2p.c
+    os/linux/include/gl_cfg80211.h
+    os/linux/include/gl_kal.h
+    os/linux/include/gl_os.h
 )
 for file in "${FILES[@]}"; do
     cp -f "$PATCHED_SOURCE/$file" "$MODULE_DIR/$file"
@@ -65,7 +74,8 @@ env PATH="$EDGE60_CLANG/bin:/usr/bin" TARGET_BUILD_VARIANT=user \
     CONFIG_MTK_MDDP_SUPPORT=m CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH=y \
     CONFIG_MTK_AEE_FEATURE=y CONFIG_NL80211_TESTMODE=y \
     DEVICE_MODULES_PATH="$EDGE60_DEVICE_MODULES" TOP="$EDGE60_AOSP" \
-    KCFLAGS=-DCONFIG_NL80211_TESTMODE modules \
+    KCFLAGS=-DCONFIG_NL80211_TESTMODE \
+    DRIVER_BUILD_DATE="$DRIVER_BUILD_DATE" modules \
     2>&1 | tee "$DIST/build.log"
 
 cp -f "$BUILT" "$DIST/wlan_drv_gen4m_6878_resident.unstripped.ko"

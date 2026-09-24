@@ -2,11 +2,13 @@
 
 Monitor mode, Radiotap RX and raw IEEE 802.11 TX for the internal MediaTek
 MT6878 Wi-Fi interface in the Motorola Edge 60 (`scout`). The driver remains
-loaded while `wlan0` switches between Android station mode and monitor mode.
+loaded while switching modes and now supports a second, concurrent monitor
+interface.
 
-Version 1.1.3 uses `wlan0` exclusively in one mode at a time. Concurrent
-`wlan0` station plus a separate `mon0` monitor interface is a 1.2.x goal and is
-not implemented yet.
+Version 1.2.0-rc1 provides two operating models:
+
+- `wlan0` managed plus RX-only `mon0`, both on the same physical radio;
+- exclusive `wlan0` monitor mode for full capture and raw injection.
 
 ## Validated target
 
@@ -15,33 +17,43 @@ not implemented yet.
 - Kernel: `6.1.145-android14-11-g25baf8f7fb12`
 - WLAN source: Motorola commit `2ba37a3`
 - Root/module manager: KernelSU Next
-- Current package: `1.1.3`
+- Current candidate: `1.2.0-rc1`
 
-Do not install this package on another firmware build. The installer checks the
-build fingerprint and aborts if it does not match.
+The installer rejects other firmware builds.
 
-## Current status
+## Concurrent monitor result
 
 Validated on the physical device:
 
-- cold boot with the resident ABI-matched module;
-- normal Android Wi-Fi association and DHCP;
-- station → monitor → station without unloading the module;
-- monitor RX with Radiotap metadata;
-- channel selection through nl80211;
-- six Radiotap Probe Requests accepted by `kalHardStartXmit`;
-- all six frames passed through `qmEnqueueTxPackets`, `nicTxFillDesc` and
-  `halWpdmaWriteData`;
-- HIF TX and netdev TX counters increased by six;
-- normal Wi-Fi recovered after the test without a kernel or firmware reset.
+- cfg80211 advertises one managed plus one monitor interface on one channel;
+- `mon0` is created and deleted through nl80211 while `wlan0` stays associated;
+- `mon0` reports `ARPHRD_IEEE80211_RADIOTAP`;
+- `tcpdump` captured valid Beacons and Probe Responses as Radiotap/802.11;
+- a 106-packet script-driven capture reported zero kernel drops;
+- `tshark` found no malformed frames in the independently checked capture;
+- changing `mon0` to a different channel while station is active is rejected;
+- five create/use/delete cycles completed while station traffic continued;
+- deleting `mon0` preserves the station association and IP;
+- no kernel panic, BUG, driver assert or firmware reset was observed.
 
-An external radio is still required to confirm the test Probe Request over the
-air. The internal trace proves delivery to the MT6878 HIF.
+The fullmac firmware exposes raw management RX while associated. Normal data RX
+remains firmware-translated Ethernet traffic on `wlan0`, so concurrent `mon0`
+does not contain every station data frame. It is deliberately RX-only. Use
+exclusive monitor mode when raw TX or the existing full monitor path is needed.
 
 ## Daily use
 
+Concurrent capture without disconnecting Android Wi-Fi:
+
 ```sh
-su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi status'
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi concurrent'
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/capture.sh /data/local/tmp/capture.pcap'
+su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi concurrent-stop'
+```
+
+Exclusive monitor and injection:
+
+```sh
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi monitor 2412'
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/capture.sh /data/local/tmp/capture.pcap'
 su -c '/data/adb/modules/edge60_wlan_monitor/tools/test_inject wlan0'
@@ -49,24 +61,23 @@ su -c '/data/adb/modules/edge60_wlan_monitor/tools/mtk-wifi normal'
 ```
 
 Never use `rmmod` to switch modes. Live unloading caused delayed kernel memory
-corruption during testing. The resident station/monitor transition avoids that
-path.
+corruption during development.
 
 ## Repository layout
 
 - `patches/`: complete patch against Motorola gen4m commit `2ba37a3`.
-- `module/`: KernelSU package template and the safe mode switcher.
-- `tools/src/`: source for the nl80211 controller and harmless injector.
+- `module/`: KernelSU package template and mode controller.
+- `tools/src/`: source for the static nl80211 controller and test injector.
 - `scripts/`: release build and validation helpers.
-- `docs/`: device validation evidence and daily usage notes.
+- `docs/`: implementation, validation and daily-use details.
 
-Generated `.ko` and ZIP files belong in GitHub Releases and are deliberately
-excluded from Git history.
+Generated `.ko`, ZIP and PCAP files belong in release artifacts and are excluded
+from Git history.
 
 ## Build
 
-The release script expects already prepared Motorola/AOSP kernel trees and the
-same Clang and module symbol inputs used by the phone:
+The release script expects prepared Motorola/AOSP kernel trees and the matching
+toolchains:
 
 ```sh
 export EDGE60_WLAN_SOURCE=/path/to/clean/gen4m
@@ -82,12 +93,11 @@ export EDGE60_STOCK_MODULE=/path/to/wlan_drv_gen4m_6878.stock.ko
 ```
 
 The script applies the patch to a disposable clone, compiles the module, checks
-all imported symbol CRCs against stock, builds the static AArch64 tools and
+the imported symbol CRCs against stock, builds the static AArch64 tools and
 creates the KernelSU ZIP under `dist/`.
 
-More detail is available in [validation](docs/validation.md) and
-[daily use](docs/daily-use.md). The remaining work for concurrent station plus
-monitor is tracked in the [concurrent monitor roadmap](docs/concurrent-monitor-roadmap.md).
+See [validation](docs/validation.md), [daily use](docs/daily-use.md) and the
+[concurrent implementation notes](docs/concurrent-monitor-roadmap.md).
 
 ## License
 

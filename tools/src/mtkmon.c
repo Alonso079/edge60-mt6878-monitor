@@ -165,6 +165,30 @@ static long nl_recv(int fd, void *buf, unsigned int len)
 	return syscall6(__NR_recvfrom, fd, (long)buf, len, 0, 0, 0);
 }
 
+static int recv_ack(int fd, __u32 sequence)
+{
+	unsigned char response[4096];
+	unsigned int attempts = 0;
+
+	while (attempts++ < 8) {
+		struct nlmsghdr *nlh;
+		long received = nl_recv(fd, response, sizeof(response));
+
+		if (received < 0)
+			return (int)received;
+		for (nlh = (struct nlmsghdr *)response;
+		     NLMSG_OK(nlh, received); nlh = NLMSG_NEXT(nlh, received)) {
+			if (nlh->nlmsg_seq != sequence)
+				continue;
+			if (nlh->nlmsg_type == NLMSG_ERROR)
+				return ((struct nlmsgerr *)NLMSG_DATA(nlh))->error;
+			if (nlh->nlmsg_type == NLMSG_DONE)
+				return 0;
+		}
+	}
+	return -2;
+}
+
 static int resolve_nl80211(int fd)
 {
 	unsigned char request[128];
@@ -216,11 +240,9 @@ static int send_nl80211(int fd, int family_id, __u8 command,
 			const __u32 *values, unsigned int count)
 {
 	unsigned char request[512];
-	unsigned char response[4096];
 	struct nlmsghdr *nlh = (struct nlmsghdr *)request;
 	struct genlmsghdr *genl;
 	unsigned int offset;
-	long received;
 
 	zero_bytes(request, sizeof(request));
 	nlh->nlmsg_type = family_id;
@@ -238,15 +260,35 @@ static int send_nl80211(int fd, int family_id, __u8 command,
 	nlh->nlmsg_len = offset;
 	if (nl_send(fd, request, offset) < 0)
 		return -1;
-	received = nl_recv(fd, response, sizeof(response));
-	if (received < 0)
-		return (int)received;
-	for (nlh = (struct nlmsghdr *)response;
-	     NLMSG_OK(nlh, received); nlh = NLMSG_NEXT(nlh, received)) {
-		if (nlh->nlmsg_type == NLMSG_ERROR)
-			return ((struct nlmsgerr *)NLMSG_DATA(nlh))->error;
-	}
-	return -2;
+	return recv_ack(fd, nlh->nlmsg_seq);
+}
+
+static int add_monitor_interface(int fd, int family_id, __u32 wiphy,
+				 const char *name)
+{
+	unsigned char request[512];
+	struct nlmsghdr *nlh = (struct nlmsghdr *)request;
+	struct genlmsghdr *genl;
+	__u32 iftype = NL80211_IFTYPE_MONITOR;
+	unsigned int offset;
+
+	zero_bytes(request, sizeof(request));
+	nlh->nlmsg_type = family_id;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	nlh->nlmsg_seq = 2;
+	genl = (struct genlmsghdr *)NLMSG_DATA(nlh);
+	genl->cmd = NL80211_CMD_NEW_INTERFACE;
+	offset = NLMSG_LENGTH(GENL_HDRLEN);
+	offset = add_attr(request, offset, NL80211_ATTR_WIPHY,
+		&wiphy, sizeof(wiphy));
+	offset = add_attr(request, offset, NL80211_ATTR_IFNAME,
+		name, str_len(name) + 1);
+	offset = add_attr(request, offset, NL80211_ATTR_IFTYPE,
+		&iftype, sizeof(iftype));
+	nlh->nlmsg_len = offset;
+	if (nl_send(fd, request, offset) < 0)
+		return -1;
+	return recv_ack(fd, nlh->nlmsg_seq);
 }
 
 static void usage(void)
@@ -254,7 +296,9 @@ static void usage(void)
 	write_str(STDERR_FILENO,
 		"usage:\n"
 		"  mtkmon iface IFINDEX monitor|station\n"
-		"  mtkmon channel IFINDEX FREQ_MHZ\n");
+		"  mtkmon channel IFINDEX FREQ_MHZ\n"
+		"  mtkmon add WIPHY_INDEX NAME\n"
+		"  mtkmon del IFINDEX\n");
 }
 
 int app_main(int argc, char **argv)
@@ -265,7 +309,7 @@ int app_main(int argc, char **argv)
 	__u32 values[3];
 	int fd, family_id, result;
 
-	if (argc < 4 || parse_u32(argv[2], &ifindex)) {
+	if (argc < 3 || parse_u32(argv[2], &ifindex)) {
 		usage();
 		return 2;
 	}
@@ -285,7 +329,7 @@ int app_main(int argc, char **argv)
 		goto close_error;
 	}
 
-	if (str_eq(argv[1], "iface")) {
+	if (str_eq(argv[1], "iface") && argc == 4) {
 		attrs[0] = NL80211_ATTR_IFTYPE;
 		if (str_eq(argv[3], "monitor"))
 			values[0] = NL80211_IFTYPE_MONITOR;
@@ -298,7 +342,7 @@ int app_main(int argc, char **argv)
 		}
 		result = send_nl80211(fd, family_id, NL80211_CMD_SET_INTERFACE,
 					ifindex, attrs, values, 1);
-	} else if (str_eq(argv[1], "channel")) {
+	} else if (str_eq(argv[1], "channel") && argc == 4) {
 		if (parse_u32(argv[3], &value)) {
 			usage();
 			result = -22;
@@ -312,6 +356,11 @@ int app_main(int argc, char **argv)
 		values[2] = value;
 		result = send_nl80211(fd, family_id, NL80211_CMD_SET_WIPHY,
 					ifindex, attrs, values, 3);
+	} else if (str_eq(argv[1], "add") && argc == 4) {
+		result = add_monitor_interface(fd, family_id, ifindex, argv[3]);
+	} else if (str_eq(argv[1], "del") && argc == 3) {
+		result = send_nl80211(fd, family_id, NL80211_CMD_DEL_INTERFACE,
+					ifindex, attrs, values, 0);
 	} else {
 		usage();
 		result = -22;

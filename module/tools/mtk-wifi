@@ -12,6 +12,8 @@ uso:
   mtk-wifi status
   mtk-wifi monitor FRECUENCIA_MHZ
   mtk-wifi normal
+  mtk-wifi concurrent
+  mtk-wifi concurrent-stop
 EOF
 	exit 2
 }
@@ -20,10 +22,42 @@ show_status()
 {
 	echo "driver_residente: $([ -r "$DRIVER_READY" ] && cat "$DRIVER_READY" || echo no)"
 	echo "estado_solicitado: $([ -f "$STATE_FILE" ] && echo monitor || echo normal)"
+	echo "monitor_concurrente: $([ -r /sys/class/net/mon0/ifindex ] && echo activo || echo inactivo)"
 	echo "wifi_android:"
 	cmd wifi status 2>/dev/null | sed -n '1,8p' || true
 	echo "wlan0:"
 	ip -details link show wlan0 2>/dev/null || echo "ausente"
+	echo "mon0:"
+	ip -details link show mon0 2>/dev/null || echo "ausente"
+}
+
+enable_concurrent()
+{
+	[ -r /sys/class/net/wlan0/ifindex ] || die "wlan0 no existe"
+	[ ! -e /sys/class/net/mon0 ] || die "mon0 ya existe"
+	[ ! -f "$STATE_FILE" ] || die "wlan0 está en monitor exclusivo"
+	[ -r /sys/class/ieee80211/phy0/index ] || die "phy0 no existe"
+
+	PHYINDEX=$(cat /sys/class/ieee80211/phy0/index)
+	"$MTKMON" add "$PHYINDEX" mon0 || die "cfg80211 rechazó mon0"
+	ip link set mon0 up || {
+		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex 2>/dev/null || true)
+		[ -z "$MON_IFINDEX" ] || "$MTKMON" del "$MON_IFINDEX" >/dev/null 2>&1 || true
+		die "no se pudo levantar mon0"
+	}
+	touch "$CONCURRENT_STATE_FILE"
+	echo "monitor concurrente activo en mon0; sigue el canal físico de wlan0"
+}
+
+disable_concurrent()
+{
+	if [ -r /sys/class/net/mon0/ifindex ]; then
+		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex)
+		ip link set mon0 down 2>/dev/null || true
+		"$MTKMON" del "$MON_IFINDEX" || die "cfg80211 no pudo eliminar mon0"
+	fi
+	rm -f "$CONCURRENT_STATE_FILE"
+	echo "monitor concurrente desactivado; wlan0 permanece administrado"
 }
 
 enable_monitor()
@@ -32,6 +66,8 @@ enable_monitor()
 	case "$FREQUENCY" in
 		*[!0-9]*|'') die "frecuencia inválida: $FREQUENCY" ;;
 	esac
+	[ ! -e /sys/class/net/mon0 ] || die \
+		"mon0 está activo; ejecuta concurrent-stop primero"
 
 	# Android must release the fullmac interface before cfg80211 changes its
 	# type. The kernel module remains loaded throughout this transition.
@@ -63,6 +99,7 @@ enable_monitor()
 
 enable_normal()
 {
+	disable_concurrent >/dev/null 2>&1 || true
 	if [ -r /sys/class/net/wlan0/ifindex ]; then
 		IFINDEX=$(iface_index)
 		ip link set wlan0 down 2>/dev/null || true
@@ -86,6 +123,16 @@ case "${1:-}" in
 		[ "$#" -eq 2 ] || usage
 		require_resident_driver
 		enable_monitor "$2"
+		;;
+	concurrent)
+		[ "$#" -eq 1 ] || usage
+		require_resident_driver
+		enable_concurrent
+		;;
+	concurrent-stop)
+		[ "$#" -eq 1 ] || usage
+		require_resident_driver
+		disable_concurrent
 		;;
 	normal)
 		[ "$#" -eq 1 ] || usage

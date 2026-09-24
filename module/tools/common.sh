@@ -7,6 +7,7 @@ MODULE_NAME=wlan_drv_gen4m_6878
 DRIVER_READY=/sys/module/$MODULE_NAME/parameters/monitor_nl80211_ready
 MTKMON="$SCRIPT_DIR/mtkmon"
 STATE_FILE=/dev/edge60-monitor-resident.active
+CONCURRENT_STATE_FILE=/dev/edge60-monitor-concurrent.active
 WMT_DEVICE=/dev/wmtWifi
 
 die()
@@ -97,6 +98,11 @@ iface_index()
 
 best_effort_normal()
 {
+	if [ -r /sys/class/net/mon0/ifindex ]; then
+		MON_IFINDEX=$(cat /sys/class/net/mon0/ifindex)
+		ip link set mon0 down 2>/dev/null || true
+		"$MTKMON" del "$MON_IFINDEX" >/dev/null 2>&1 || true
+	fi
 	if [ -r /sys/class/net/wlan0/ifindex ]; then
 		IFINDEX=$(iface_index)
 		ip link set wlan0 down 2>/dev/null || true
@@ -106,4 +112,5 @@ best_effort_normal()
 	power_off_wifi
 	start_android_wifi
 	rm -f "$STATE_FILE"
+	rm -f "$CONCURRENT_STATE_FILE"
 }
