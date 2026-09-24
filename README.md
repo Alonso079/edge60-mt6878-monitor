@@ -5,7 +5,7 @@ MT6878 Wi-Fi interface in the Motorola Edge 60 (`scout`). The driver remains
 loaded while switching modes and now supports a second, concurrent monitor
 interface.
 
-Version 1.2.0-rc4 provides two operating models plus a time-sliced survey:
+Version 1.2.0 provides two operating models plus a time-sliced survey:
 
 - `wlan0` managed plus RX-only `mon0`, normally on the station channel;
 - short MCC survey windows on another channel while `wlan0` remains managed;
@@ -18,7 +18,7 @@ Version 1.2.0-rc4 provides two operating models plus a time-sliced survey:
 - Kernel: `6.1.145-android14-11-g25baf8f7fb12`
 - WLAN source: Motorola commit `2ba37a3`
 - Root/module manager: KernelSU Next
-- Current candidate: `1.2.0-rc4`
+- Current release: `1.2.0`
 
 The installer rejects other firmware builds.
 
@@ -42,6 +42,13 @@ Validated on the physical device:
 - deleting `mon0` preserves the station association and IP;
 - no kernel panic, BUG, driver assert or firmware reset was observed.
 - station connectivity completed 12/12 probes during the final survey test.
+- ten consecutive create/survey/delete cycles completed with 35/35 connectivity
+  probes and clean state after every cycle;
+- Android Wi-Fi disable/enable, screen sleep/wake and exclusive-to-normal mode
+  transitions recovered successfully;
+- controller operations are serialized and recover stale locks;
+- the installer verifies a temporary copy and atomically replaces the resident
+  module, preserving the previous file if staging fails.
 
 The fullmac firmware exposes raw management RX while associated. Normal data RX
 remains firmware-translated Ethernet traffic on `wlan0`, so concurrent `mon0`

@@ -2,7 +2,7 @@
 
 ## Modos disponibles
 
-El módulo residente 1.2.0-rc4 se carga una sola vez durante el arranque y ofrece
+El módulo residente 1.2.0 se carga una sola vez durante el arranque y ofrece
 dos formas de trabajo:
 
 ```text
@@ -73,6 +73,11 @@ Si una captura termina de forma abrupta, `mtk-wifi concurrent-stop` elimina una
 `mon0` existente aunque falte el archivo de estado. `mtk-wifi normal` también
 limpia `mon0` antes de devolver el control completo a Android.
 
+El controlador serializa las operaciones que cambian el modo o canal. Si otra
+terminal intenta modificar el Wi-Fi al mismo tiempo, recibe un error en vez de
+interferir con la transición activa. Un bloqueo dejado por un proceso terminado
+se recupera automáticamente.
+
 No descargues el módulo Wi-Fi en caliente. Esa operación produjo corrupción de
 memoria diferida durante el desarrollo. Un reinicio en frío es el camino seguro
 para cambiar el binario residente.
@@ -86,4 +91,7 @@ para cambiar el binario residente.
 - 144 tramas de administración con Radiotap válido y cero malformadas;
 - eliminación de `mon0` sin perder conectividad;
 - cinco ciclos de creación/uso/eliminación;
+- diez ciclos adicionales con MCC y 35/35 respuestas de conectividad;
+- recuperación después de apagar/encender Android Wi-Fi y reposo de pantalla;
+- transición monitor exclusivo → normal con 5/5 respuestas posteriores;
 - sin panic, BUG, assert ni reinicio del firmware en las pruebas finales.

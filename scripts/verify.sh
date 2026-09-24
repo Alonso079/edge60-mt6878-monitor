@@ -29,7 +29,11 @@ grep -q 'NL80211_IFTYPE_MONITOR' \
 grep -q 'PACKET_QDISC_BYPASS' "$ROOT/tools/src/test_inject.c"
 grep -q 'NL80211_CMD_NEW_INTERFACE' "$ROOT/tools/src/mtkmon.c"
 grep -q 'NL80211_CMD_REMAIN_ON_CHANNEL' "$ROOT/tools/src/mtkmon.c"
-grep -q '^version=1.2.0-rc4$' "$ROOT/module/module.prop"
+grep -q 'OP_LOCK_DIR=/dev/edge60-monitor-operation.lock' \
+    "$ROOT/module/tools/common.sh"
+grep -q 'cmp -s.*MODULE_TEMP' "$ROOT/module/customize.sh"
+grep -q 'mv -f.*MODULE_TEMP.*MODULE_TARGET' "$ROOT/module/customize.sh"
+grep -q '^version=1.2.0$' "$ROOT/module/module.prop"
 
 if find "$ROOT" \( -path "$ROOT/.git" -o -path "$ROOT/.build" -o \
     -path "$ROOT/dist" \) -prune -o -type f \

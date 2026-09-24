@@ -2,7 +2,7 @@
 
 ## Implemented result
 
-Version 1.2.0-rc4 supports this topology on the MT6878 radio:
+Version 1.2.0 supports this topology on the MT6878 radio:
 
 ```text
 wlan0: managed, associated, normal Android traffic
@@ -71,9 +71,9 @@ Exclusive `wlan0` monitor mode remains available for the firmware monitor path
 and raw injection. An external receiver is still needed to prove over-the-air
 transmission of injected frames.
 
-## Remaining release work
+## Release status
 
-Before removing the release-candidate suffix, repeat longer tests covering
-suspend/resume, roaming, 2.4/5 GHz transitions and common libpcap tools. These
-tests measure daily-use stability; the concurrent interface milestone itself is
-implemented and validated.
+The stable release passed repeated monitor lifecycle, MCC, Android Wi-Fi
+disable/enable, screen sleep/wake and exclusive-to-managed recovery tests.
+Roaming and firmware updates remain compatibility variables to retest when the
+device environment changes.

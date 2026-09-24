@@ -1,6 +1,6 @@
 # Validación de monitor e inyección MT6878
 
-## Resultado 1.2.0-rc4
+## Resultado 1.2.0
 
 El Motorola Edge 60 (`scout`, MT6878) ejecuta un módulo Wi-Fi residente que
 mantiene el modo exclusivo de 1.1.3 y añade una interfaz monitor concurrente.
@@ -18,7 +18,7 @@ Android permanecen activos.
 - Kernel: `6.1.145-android14-11-g25baf8f7fb12`.
 - Compilador: Android Clang `r487747c`, Clang 17.0.2.
 - Arquitectura/variante: AArch64 `user`.
-- Módulo candidato SHA-256:
+- Módulo estable SHA-256:
   `a6673ec9ff34c44f99c614caf14d32a05787c079a000c9dc92edddcd97f7c52b`.
 - Vermagic: coincidencia exacta con el dispositivo.
 - Símbolos importados comunes: 388/388 CRC iguales.
@@ -72,6 +72,28 @@ de 2,4 GHz durante una exploración, no registró descartes del kernel y dejó
 `p2p0` DOWN al completar la ventana. La conectividad de la estación completó
 12/12 respuestas durante la misma prueba; la latencia máxima fue 213 ms con
 una ventana de 1000 ms.
+
+La prueba de estabilidad añadió diez ciclos consecutivos de crear `mon0`, abrir
+una ventana MCC y eliminar la interfaz. Completó 35/35 respuestas de red, sin
+estado de survey, bloqueo o interfaz residual. Una interrupción deliberada del
+survey restauró `p2p0`, y una segunda operación simultánea fue rechazada sin
+alterar la primera.
+
+También se validaron apagar/encender Android Wi-Fi con `mon0`, reposo y
+reactivación de pantalla durante captura, y monitor exclusivo con seis tramas
+de prueba seguido de retorno a managed. La captura tras reposo tuvo 43 tramas,
+Radiotap versión 0 y cero malformadas; la conectividad posterior completó 5/5.
+
+El instalador estable copia a un nombre temporal, compara byte por byte, aplica
+propietario/permisos/SELinux y hace `rename` al final. La ruta de error fue
+probada sin modificar el módulo activo y la ruta correcta dejó el hash esperado
+sin archivos temporales.
+
+Después de instalar 1.2.0 y reiniciar en frío, el estado de arranque fue
+`resident`. El smoke test final capturó 33 tramas de administración en 5 GHz y
+2,4 GHz, todas Radiotap versión 0, sin malformados ni descartes del kernel. La
+limpieza dejó interfaz, survey y bloqueo ausentes, y la conectividad completó
+5/5 respuestas.
 
 ## Límite observado
 

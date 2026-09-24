@@ -9,12 +9,41 @@ MTKMON="$SCRIPT_DIR/mtkmon"
 STATE_FILE=/dev/edge60-monitor-resident.active
 CONCURRENT_STATE_FILE=/dev/edge60-monitor-concurrent.active
 SURVEY_STATE_FILE=/dev/edge60-monitor-survey.active
+OP_LOCK_DIR=/dev/edge60-monitor-operation.lock
 WMT_DEVICE=/dev/wmtWifi
+SURVEY_CLEANUP=0
 
 die()
 {
 	echo "ERROR: $*" >&2
 	exit 1
+}
+
+release_operation_lock()
+{
+	if [ "$SURVEY_CLEANUP" = 1 ]; then
+		best_effort_stop_survey
+	fi
+	rm -f "$OP_LOCK_DIR/pid" 2>/dev/null || true
+	rmdir "$OP_LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_operation_lock()
+{
+	if ! mkdir "$OP_LOCK_DIR" 2>/dev/null; then
+		LOCK_PID=$(cat "$OP_LOCK_DIR/pid" 2>/dev/null || true)
+		if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+			die "otra operación Wi-Fi está activa (pid $LOCK_PID)"
+		fi
+		rm -rf "$OP_LOCK_DIR" 2>/dev/null || die \
+			"no se pudo limpiar el bloqueo obsoleto"
+		mkdir "$OP_LOCK_DIR" 2>/dev/null || die \
+			"no se pudo adquirir el bloqueo Wi-Fi"
+	fi
+	echo $$ > "$OP_LOCK_DIR/pid" || die \
+		"no se pudo registrar el bloqueo Wi-Fi"
+	trap 'release_operation_lock' EXIT
+	trap 'exit 1' HUP INT TERM
 }
 
 require_root()

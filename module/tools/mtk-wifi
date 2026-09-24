@@ -92,22 +92,24 @@ survey_channel()
 
 	P2P_FLAGS=$(cat /sys/class/net/p2p0/flags)
 	if [ $((P2P_FLAGS & 1)) -eq 0 ]; then
-		ip link set p2p0 up || die "no se pudo levantar p2p0"
-		echo raised > "$SURVEY_STATE_FILE"
+		echo raised > "$SURVEY_STATE_FILE" || die \
+			"no se pudo registrar el estado de p2p0"
 	else
-		echo existing > "$SURVEY_STATE_FILE"
+		echo existing > "$SURVEY_STATE_FILE" || die \
+			"no se pudo registrar el estado de p2p0"
+	fi
+	SURVEY_CLEANUP=1
+	if [ $((P2P_FLAGS & 1)) -eq 0 ]; then
+		ip link set p2p0 up || die "no se pudo levantar p2p0"
 	fi
 
-	trap 'best_effort_stop_survey' EXIT
-	trap 'exit 1' HUP INT TERM
 	P2P_IFINDEX=$(cat /sys/class/net/p2p0/ifindex)
 	"$MTKMON" roc "$P2P_IFINDEX" "$FREQUENCY" "$DURATION" || die \
 		"firmware/cfg80211 rechazó la ventana fuera de canal"
 	WAIT_SECONDS=$(((DURATION + 999) / 1000))
 	sleep "$WAIT_SECONDS"
-	trap - HUP INT TERM
 	best_effort_stop_survey
-	trap - EXIT
+	SURVEY_CLEANUP=0
 	echo "survey MCC completado: $FREQUENCY MHz durante $DURATION ms"
 }
 
@@ -165,6 +167,10 @@ enable_normal()
 
 require_root
 check_device
+
+if [ "${1:-}" != status ]; then
+	acquire_operation_lock
+fi
 
 case "${1:-}" in
 	status)

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0
+
+- Serialize mode and survey operations to prevent commands from racing.
+- Recover automatically from an operation lock left by a terminated process.
+- Restore survey state on interruption and keep `p2p0` ownership intact.
+- Verify the resident payload before atomically replacing the active file in
+  `/metadata`.
+- Validate ten concurrent/MCC lifecycle cycles with uninterrupted station
+  traffic.
+- Validate Android Wi-Fi disable/enable, screen sleep/wake, exclusive monitor
+  TX and return to managed mode on hardware.
+
 ## 1.2.0-rc4
 
 - Add a bounded remain-on-channel command for MCC off-channel surveys.

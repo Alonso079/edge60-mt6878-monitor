@@ -1,7 +1,7 @@
 id=edge60_wlan_monitor
 name=Edge 60 MT6878 Resident Monitor
-version=1.2.0-rc4
-versionCode=123
+version=1.2.0
+versionCode=124
 architecture=arm64
 author=Diogenes + Codex
 description=MT6878 concurrent monitor with MCC survey, exclusive monitor, Radiotap RX and raw 802.11 TX.
